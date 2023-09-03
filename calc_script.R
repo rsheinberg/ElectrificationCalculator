@@ -1,0 +1,417 @@
+## Electrification Calculator
+## Rachel Sheinberg
+## 8.31
+
+library(ggplot2)
+library(stringr)
+library(readxl)
+
+# ----------------- import data ------------------
+
+# Set the base directory where the folders are located
+base_dir <- "C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/"
+
+# Read in NREL usage data
+energy_data <- read.csv("C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/energy_data.csv")
+# Read in customer input *** this will be replaced by shiny UI ***
+inputs <- read_excel("C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/electric_calculator.xlsm", sheet = 4)
+
+# -------------- change format so R can use ----------------
+home_type <- gsub("[ +\\-]", ".", inputs$Inputs[1])
+current_status <- gsub("[ +\\-]", ".", inputs$Inputs[2])
+upgrade_status <- gsub("[ +\\-]", ".", inputs$Inputs[3])
+
+timestamp <- energy_data$timestamp
+start_elec <- paste0(current_status, ".", home_type, ".elec")
+start_gas <- paste0(current_status, ".", home_type, ".gas")
+upgrade_elec <- paste0(upgrade_status, ".", home_type, ".elec")
+upgrade_gas <- paste0(upgrade_status, ".", home_type, ".gas")
+
+# --------- Access the appropriate columns in the NREL usage dataframe -------------
+
+start_elec_cons <- energy_data[[start_elec]]
+start_gas_cons<- energy_data[[start_gas]]
+upgrade_elec_cons <- energy_data[[upgrade_elec]]
+upgrade_gas_cons<- energy_data[[upgrade_gas]]
+
+# -------------- normalize usage values ----------------------
+
+total <- sum(start_elec_cons)  # Calculate the sum of all values
+scaled_start_elec_cons <- start_elec_cons / total  # Scale each value
+total <- sum(start_gas_cons)  # Calculate the sum of all values
+scaled_start_gas_cons <- start_gas_cons / total  # Scale each value
+
+total <- sum(upgrade_elec_cons)  # Calculate the sum of all values
+scaled_upgrade_elec_cons <- upgrade_elec_cons / total  # Scale each value
+total <- sum(upgrade_gas_cons)  # Calculate the sum of all values
+scaled_upgrade_gas_cons <- upgrade_gas_cons / total  # Scale each value
+
+# -------------- scale usage values up via user inputs ----------------
+
+# using calculated multipliers for 605 start-home-upgrade combinations
+multipliers <- read.csv("C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/multipliers_r.csv")
+multiplier_key <- paste0(current_status,".",home_type,".",upgrade_status)
+#multiplying by user inputs
+upgrade_elec_mult <- multipliers[[multiplier_key]][1]*as.integer(inputs$Inputs[4])
+upgrade_gas_mult <- multipliers[[multiplier_key]][2]*as.integer(inputs$Inputs[5])*29.3 ## therms to kwh 
+#create dataframe to hold our values 
+df <- data.frame(
+  timestamp = as.POSIXct(timestamp, format = "%m/%d/%Y %H:%M"),
+  scaled_start_elec_cons = scaled_start_elec_cons*as.integer(inputs$Inputs[4]),
+  scaled_start_gas_cons = scaled_start_gas_cons*as.integer(inputs$Inputs[5])*29.3,
+  scaled_upgrade_elec_cons = scaled_start_elec_cons*upgrade_elec_mult,
+  scaled_upgrade_gas_cons = scaled_start_gas_cons*upgrade_gas_mult
+)
+
+# ------------- sum usage values into months ----------------
+
+# taking vals from each month specifically 
+month_vals <- list(2976,2688,2976,2880,2976,2880,2976,2976,2880,2976,2880,2976)
+integer_list <- lapply(month_vals, as.integer)
+# create dataframe to hold values
+monthly_sums <- data.frame(
+  Month = month.name,
+  start_elec = rep(0, 12),
+  start_gas= rep(0, 12),
+  upgrade_elec = rep(0, 12),
+  upgrade_gas= rep(0, 12)
+)
+#for loop to populate with summed values
+count <- 1
+for (i in 1:12) {
+  month_count  <- count + month_vals[[i]]
+  monthly_sums$start_elec[i] <- sum(df$scaled_start_elec_cons[count:month_count-1])
+  monthly_sums$start_gas[i] <- sum(df$scaled_start_gas_cons[count:month_count-1])
+  monthly_sums$upgrade_elec[i] <- sum(df$scaled_upgrade_elec_cons[count:month_count-1])
+  monthly_sums$upgrade_gas[i] <- sum(df$scaled_upgrade_gas_cons[count:month_count-1])
+  count <- month_count
+}
+
+# --------------- introduce transportation usage and cost ------------
+### pre transition ###
+# Extract values from user inputs
+current_car <- inputs[15, 2]  # Assuming it's in the 15th row, 2nd column
+vmt <- ifelse(inputs[17, 2] != 0, as.numeric(inputs[17, 2]), 10000)  # Assuming it's in the 17th row, 2nd column
+current_mpg <- as.numeric(inputs[16, 2])  # Assuming it's in the 16th row, 2nd column
+gas_price <- as.numeric(inputs[11, 2])  # Assuming it's in the 11th row, 2nd column
+start_gas_cost <- 0 
+gas_consumed <- 0
+
+# Calculate start_gas_cost
+if (current_car == 'None') {
+  start_gas_cost <- 0
+} else if (current_car == 'Gasoline Car/Sedan' | current_car == 'Gasoline Light Truck/Van/SUV') {
+  gas_consumed <- vmt / current_mpg
+  start_gas_cost <- gas_price * gas_consumed
+} else {
+  start_gas_cost <- 0
+}
+# Calculate start_daily_gas_cost
+start_daily_gas_cost <- start_gas_cost / 365
+
+### post transition ###
+
+# EV MPGe
+ev_mpge <- ifelse(current_car == "Gasoline Light Truck/Van/SUV", 93, 100)
+# Transition
+transition <- inputs[14, 2]
+
+# Initialize variables
+upgrade_gas_cost <- 0
+e_trans_consumed <- 0
+e_trans_consumed_daily <- 0
+
+# Assess upgrade_gas_cost and e_trans_consumed based on transition
+if (transition == 'None' | transition == 'Solar PV') {
+  upgrade_gas_cost <- start_gas_cost
+} else {
+  ge_consumed <- vmt / ev_mpge
+  e_trans_consumed <- ge_consumed * 33.7  # Assuming 1 gallon equivalent ~ 33.7 kWh
+  e_trans_consumed_daily <- e_trans_consumed / 365
+}
+
+# Upgrade daily gas cost
+upgrade_daily_gas_cost <- upgrade_gas_cost / 365
+
+# EV charging behavior
+ev_charging <- inputs[18, 2]
+
+e_trans_cost_daily <-0
+
+# Initialize e_trans_cost_daily and e_trans_consumed_daily based on charging behavior
+if (ev_charging == "Residential/Overnight") {
+  charge_hours <- e_trans_consumed_daily / 7.6  # Assuming charge rate is 7.6 kW
+  trans_charge_load <- e_trans_consumed_daily / charge_hours  # Useful for TOU pricing
+  e_trans_cost_daily <- 0
+} else if (ev_charging == 'Public or Workplace/Daytime Level 2') {
+  e_trans_cost_daily <- e_trans_consumed_daily * 0.29  # Assuming $0.29 per kWh
+  e_trans_consumed_daily <- 0
+} else if (ev_charging == 'Public or Workplace/Daytime DCFC') {
+  e_trans_cost_daily <- e_trans_consumed_daily * 0.42  # Assuming $0.42 per kWh
+  e_trans_consumed_daily <- 0
+} else {
+  e_trans_cost_daily <- 0
+  e_trans_consumed_daily <- 0
+}
+
+# Define the number of days in each month (including the total for the year)
+days_in_month <- c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 365)
+# Calculate start_gas_cost for each month
+start_gas_cost <- days_in_month * start_daily_gas_cost
+# Calculate upgrade_gas_cost for each month
+upgrade_gas_cost <- days_in_month * upgrade_daily_gas_cost
+# Calculate upgrade_res_ev_elec for each month
+upgrade_res_ev_elec <- days_in_month * e_trans_consumed_daily
+# Calculate upgrade_res_ev_cost for each month
+upgrade_res_ev_cost <- days_in_month * e_trans_cost_daily
+
+# Add charging cost to electricity load 
+monthly_sums$upgrade_elec = monthly_sums$upgrade_elec + upgrade_res_ev_elec[1:12]
+
+#----------------- calculating costs --------------------
+
+monthly_sums['start_elec_cost'] <- 0
+monthly_sums['upgrade_elec_cost'] <- 0
+monthly_sums['start_nat_gas_cost'] <- 0
+monthly_sums['upgrade_nat_gas_cost'] <-0
+monthly_sums['start_fuel_cost'] <- 0 
+monthly_sums['upgrade_fuel_cost'] <- 0 
+
+# ----------------electricity pricing ------------------
+
+## read in elec prices ##
+file_path <- "C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/electric_pricing.xlsx"
+sheet_name <- "resi"
+# Read the Excel file into a data frame
+elec_prices <- read_excel(file_path, sheet = sheet_name)
+
+## calculate monthly electricity cost ##
+
+zone <- as.numeric(inputs[6,2])
+for (x in 1:12) {
+  start_elec <- monthly_sums$start_elec[x]
+  upgrade_elec <- monthly_sums$upgrade_elec[x]
+  
+  if (zone == 1) {
+    if (start_elec <= 350) {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T1`[x] + elec_prices$`En Charge T1`[x] * start_elec
+    } else if (start_elec <= 1050) {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T2`[x] + elec_prices$`En Charge T1`[x] * 350 + elec_prices$`En Charge T2`[x] * (start_elec - 350)
+    } else {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T3`[x] + elec_prices$`En Charge T1`[x] * 350 + elec_prices$`En Charge T2`[x] * 700 + elec_prices$`En Charge T3`[x] * (start_elec - 1050)
+    }
+    
+    if (upgrade_elec <= 350) {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T1`[x] + elec_prices$`En Charge T1`[x] * upgrade_elec
+    } else if (upgrade_elec <= 1050) {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T2`[x] + elec_prices$`En Charge T1`[x] * 350 + elec_prices$`En Charge T2`[x] * (upgrade_elec - 350)
+    } else {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T3`[x] + elec_prices$`En Charge T1`[x] * 350 + elec_prices$`En Charge T2`[x] * 700 + elec_prices$`En Charge T3`[x] * (upgrade_elec - 1050)
+    }
+  } else {
+    if (start_elec <= 500) {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T1`[x] + elec_prices$`En Charge T1`[x] * start_elec
+    } else if (start_elec <= 1500) {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T2`[x] + elec_prices$`En Charge T1`[x] * 500 + elec_prices$`En Charge T2`[x] * (start_elec - 500)
+    } else {
+      monthly_sums$start_elec_cost[x] <- elec_prices$`Cust Charge T3`[x] + elec_prices$`En Charge T1`[x] * 500 + elec_prices$`En Charge T2`[x] * 1000 + elec_prices$`En Charge T3`[x] * (start_elec - 1500)
+    }
+    
+    if (upgrade_elec <= 500) {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T1`[x] + elec_prices$`En Charge T1`[x] * upgrade_elec
+    } else if (upgrade_elec <= 1500) {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T2`[x] + elec_prices$`En Charge T1`[x] * 500 + elec_prices$`En Charge T2`[x] * (upgrade_elec - 500)
+    } else {
+      monthly_sums$upgrade_elec_cost[x] <- elec_prices$`Cust Charge T3`[x] + elec_prices$`En Charge T1`[x] * 500 + elec_prices$`En Charge T2`[x] * 1000 + elec_prices$`En Charge T3`[x] * (upgrade_elec - 1500)
+    }
+  }
+}
+
+#need to unlist after using loop to assign values
+monthly_sums$start_elec_cost <- unlist(monthly_sums$start_elec_cost)
+monthly_sums$upgrade_elec_cost <- unlist(monthly_sums$upgrade_elec_cost)
+
+# Accounting for Lifeline or EZ-Save, Utility Users Tax (UUT)
+if (inputs[7, 2] == 'Lifeline') {
+  monthly_sums$start_elec_cost <- monthly_sums$start_elec_cost - 17.71  # No UUT, Lifeline discount
+  monthly_sums$upgrade_elec_cost <- monthly_sums$upgrade_elec_cost - 17.71  # No UUT, Lifeline discount
+} else if (inputs[7, 2] == 'EZ-Save') {
+  monthly_sums$start_elec_cost <- (monthly_sums$start_elec_cost - 8.17) * 1.1  # Adding UUT, EZ-Save discount
+  monthly_sums$upgrade_elec_cost <- (monthly_sums$upgrade_elec_cost - 8.17) * 1.1  # Adding UUT, EZ-Save discount
+} else {
+  monthly_sums$start_elec_cost <- monthly_sums$start_elec_cost * 1.1  # Adding UUT, no discount
+  monthly_sums$upgrade_elec_cost <- monthly_sums$upgrade_elec_cost * 1.1  # Adding UUT, no discount
+}
+
+# ---------- adding in transportation costs ----------------
+
+# start is just option for gasoline car, assuming if EV it is charged within home load 
+monthly_sums$start_fuel_cost <- start_gas_cost[1:12]
+# upgrade includes both gasoline (no transition) and possible public charging costs
+monthly_sums$upgrade_fuel_cost <- upgrade_gas_cost[1:12] + upgrade_res_ev_cost[1:12]
+
+# -------------- natural gas pricing --------------------
+
+file_path <- "C:/Users/Rachel/OneDrive - UCLA IT Services/Documents/DWP_Electrification_Cal/ng_pricing_res.xlsx"
+# Read Dataframe from Excel file
+gas_prices <- read_excel(file_path)
+
+
+gas_tax <- 1.0892
+
+for (x in 1:12) {
+  baseline <- gas_prices$`Baseline Allowance Z1`[x]
+  start_nat_gas_usage <- monthly_sums$start_gas[x] / 29.3
+  upgrade_nat_gas_usage <- monthly_sums$upgrade_gas[x] / 29.3
+  
+  if (inputs[8, 1] == 'None' && (inputs[7, 1] == 'None' || inputs[7, 1] == 'EZ-Save')) {
+    if (start_nat_gas_usage <= baseline) {
+      monthly_sums$start_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * start_nat_gas_usage + gas_prices$PPPG[x] * start_nat_gas_usage)
+    } else {
+      monthly_sums$start_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (start_nat_gas_usage - baseline) + gas_prices$PPPG[x] * start_nat_gas_usage)
+    }
+    
+    if (upgrade_nat_gas_usage <= baseline) {
+      monthly_sums$upgrade_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * upgrade_nat_gas_usage + gas_prices$PPPG[x] * upgrade_nat_gas_usage)
+    } else {
+      monthly_sums$upgrade_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (upgrade_nat_gas_usage - baseline) + gas_prices$PPPG[x] * upgrade_nat_gas_usage)
+    }
+  } else if (inputs[8, 1] == 'None' && inputs[7, 1] == 'Lifeline') {
+    if (start_nat_gas_usage <= baseline) {
+      monthly_sums$start_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * start_nat_gas_usage + gas_prices$PPPG[x] * start_nat_gas_usage)
+    } else {
+      monthly_sums$start_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (start_nat_gas_usage - baseline) + gas_prices$PPPG[x] * start_nat_gas_usage)
+    }
+    
+    if (upgrade_nat_gas_usage <= baseline) {
+      monthly_sums$upgrade_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * upgrade_nat_gas_usage + gas_prices$PPPG[x] * upgrade_nat_gas_usage)
+    } else {
+      monthly_sums$upgrade_nat_gas_cost[x] <- gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (upgrade_nat_gas_usage - baseline) + gas_prices$PPPG[x] * upgrade_nat_gas_usage)
+    }
+  } else if (inputs[8, 1] == 'CARE' && (inputs[7, 1] == 'None' || inputs[7, 1] == 'EZ-Save')) {
+    if (start_nat_gas_usage <= baseline) {
+      monthly_sums$start_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * start_nat_gas_usage + gas_prices$`PPPG - CARE`[x] * start_nat_gas_usage)) * 0.8
+    } else {
+      monthly_sums$start_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (start_nat_gas_usage - baseline) + gas_prices$`PPPG - CARE`[x] * start_nat_gas_usage)) * 0.8
+    }
+    
+    if (upgrade_nat_gas_usage <= baseline) {
+      monthly_sums$upgrade_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * upgrade_nat_gas_usage + gas_prices$`PPPG - CARE`[x] * upgrade_nat_gas_usage)) * 0.8
+    } else {
+      monthly_sums$upgrade_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + gas_tax * (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (upgrade_nat_gas_usage - baseline) + gas_prices$`PPPG- CARE`[x] * upgrade_nat_gas_usage)) * 0.8
+    }
+  } else {
+    if (start_nat_gas_usage <= baseline) {
+      monthly_sums$start_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * start_nat_gas_usage + gas_prices$`PPPG - CARE`[x] * start_nat_gas_usage)) * 0.8
+    } else {
+      monthly_sums$start_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (start_nat_gas_usage - baseline) + gas_prices$`PPPG - CARE`[x] * start_nat_gas_usage)) * 0.8
+    }
+    
+    if (upgrade_nat_gas_usage <= baseline) {
+      monthly_sums$upgrade_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * upgrade_nat_gas_usage + gas_prices$`PPPG - CARE`[x] * upgrade_nat_gas_usage)) * 0.8
+    } else {
+      monthly_sums$upgrade_nat_gas_cost[x] <- (gas_prices$`Customer Charge`[x] + (gas_prices$`Baseline Procurement_Transmission`[x] * baseline + gas_prices$`Non-Baseline Procurement_Transmission`[x] * (upgrade_nat_gas_usage - baseline) + gas_prices$`PPPG- CARE`[x] * upgrade_nat_gas_usage)) * 0.8
+    }
+  }
+}
+
+## zero out  the almost zero usage for whole-home electrification 
+monthly_sums$upgrade_nat_gas_cost <- ifelse(monthly_sums$upgrade_nat_gas_cost <= 8, 0, monthly_sums$upgrade_nat_gas_cost)
+monthly_sums$start_nat_gas_cost <- ifelse(monthly_sums$start_nat_gas_cost <= 8, 0, monthly_sums$start_nat_gas_cost)
+
+
+# ----------- visualization ------------ 
+
+start_sums <- rbind(
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$start_elec_cost, "type"="Electricity"),
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$start_nat_gas_cost, "type"="Natural Gas"),
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$start_fuel_cost, "type" = "Transportation Fuel")
+)
+
+upgrade_sums <- rbind(
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$upgrade_elec_cost, "type"="Electricity"),
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$upgrade_nat_gas_cost, "type"="Natural Gas"),
+  data.frame(Month = monthly_sums$Month, "count" = monthly_sums$upgrade_fuel_cost, "type" = "Transportation Fuel")
+)
+
+# Create a vector with the desired order of months
+month_order <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+# Convert the "Month" column to a factor with the desired order
+start_sums$Month <- factor(start_sums$Month, levels = month_order)
+upgrade_sums$Month <- factor(upgrade_sums$Month, levels = month_order)
+
+ggplot(start_sums, aes(x=Month, y=count, fill=type)) +
+  geom_bar(stat="identity") +
+  labs(title = "Electric Costs",
+       x = "Month",
+       y = "Total Costs ($)") +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title horizontally
+
+ggplot(upgrade_sums, aes(x= Month, y = count, fill = type)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Upgrade Costs",
+       x = "Month",
+       y = "Total Costs ($)") +
+theme(plot.title = element_text(hjust = 0.5))  # Center the title horizontally
+
+
+# Combine the start_sums and upgrade_sums dataframes
+combined_sums <- rbind(
+  data.frame(monthly_sums$Month, "count" = monthly_sums$start_elec_cost, "type" = "Electricity", "source" = "Start"),
+  data.frame(monthly_sums$Month, "count" = monthly_sums$start_nat_gas_cost, "type" = "Natural Gas", "source" = "Start"),
+  data.frame(monthly_sums$Month, "count" = monthly_sums$start_fuel_cost, "type" = "Transportation Fuel", "source" = "Start"),
+  data.frame(monthly_sums$Month, "count" = monthly_sums$upgrade_elec_cost, "type" = "Electricity", "source" = "Upgrade"),
+  data.frame(monthly_sums$Month, "count" = monthly_sums$upgrade_nat_gas_cost, "type" = "Natural Gas", "source" = "Upgrade"),
+  data.frame(monthly_sums$Month, "count" = monthly_sums$upgrade_fuel_cost, "type" = "Transportation Fuel", "source" = "Upgrade")
+)
+
+# Create the stacked bar chart
+ggplot(combined_sums, aes(x = monthly_sums.Month, y = count, fill = type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~ source, ncol = 1) +  # Facet by 'source' to separate Start and Upgrade bars
+  labs(
+    title = "Electric Costs",
+    x = "Month",
+    y = "Total Costs ($)"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title horizontally
+
+# Create the grouped bar chart
+ggplot(combined_sums, aes(x = monthly_sums.Month, y = count, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ source, ncol = 1) +  # Facet by 'source' to separate Start and Upgrade bars
+  labs(
+    title = "Electric Costs",
+    x = "Month",
+    y = "Total Costs ($)"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title horizontally
+
+# Sum the values for "Start" and "Upgrade"
+total_start_cost <- sum(combined_sums$count[combined_sums$source == "Start"])
+total_upgrade_cost <- sum(combined_sums$count[combined_sums$source == "Upgrade"])
+
+# Calculate the difference
+difference <- total_upgrade_cost - total_start_cost
+
+# Print the results
+cat("Total Start Cost:", total_start_cost, "\n")
+cat("Total Upgrade Cost:", total_upgrade_cost, "\n")
+cat("Difference (Upgrade - Start):", difference, "\n")
+
+
+# Create a data frame for the totals
+totals_df <- data.frame(
+  Source = c("Start", "Upgrade"),
+  Total_Cost = c(total_start_cost, total_upgrade_cost)
+)
+
+# Create a bar plot
+bar_plot <- ggplot(totals_df, aes(x = Source, y = Total_Cost, fill = Source)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Start vs. Upgrade Costs", y = "Total Cost") +
+  theme_minimal()
+
+print(bar_plot)
+                           
