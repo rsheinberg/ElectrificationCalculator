@@ -5,6 +5,7 @@
 library(ggplot2)
 library(stringr)
 library(readxl)
+library(scales)
 
 # ----------------- import data ------------------
 
@@ -90,83 +91,92 @@ for (i in 1:12) {
 # --------------- introduce transportation usage and cost ------------
 ### pre transition ###
 # Extract values from user inputs
-current_car <- inputs[15, 2]  # Assuming it's in the 15th row, 2nd column
-vmt <- ifelse(inputs[17, 2] != 0, as.numeric(inputs[17, 2]), 10000)  # Assuming it's in the 17th row, 2nd column
-current_mpg <- as.numeric(inputs[16, 2])  # Assuming it's in the 16th row, 2nd column
-gas_price <- as.numeric(inputs[11, 2])  # Assuming it's in the 11th row, 2nd column
+current_car <- inputs[14, 2] 
+upgrade_car <- inputs[15,2]
+vmt <- as.numeric(inputs[17, 2]) # put in estimate or zero
+gas_price <- as.numeric(inputs[11, 2])
+ev_charging <- inputs[18, 2]
+## if you currently have a van we assume a van ev, otherwise sedan mpge 
+current_ev_mpge <- ifelse((current_car == "Gasoline Light Truck/Van/SUV" | current_car == "EV Light Truck/Van/SUV"), 93, 100) 
+upgrade_ev_mpge <- ifelse((upgrade_car == "Gasoline Light Truck/Van/SUV" | upgrade_car == "EV Light Truck/Van/SUV"), 93, 100) 
+#initialize all the variables for starting 
+gas_consumed <- 0 
 start_gas_cost <- 0 
-gas_consumed <- 0
+start_gas_cost_daily <- 0 
+start_e_trans <- 0 
+start_e_trans_daily <- 0 
+start_e_trans_cost <- 0
+start_e_trans_cost_daily <- 0 
 
-# Calculate start_gas_cost
-if (current_car == 'None') {
-  start_gas_cost <- 0
-} else if (current_car == 'Gasoline Car/Sedan' | current_car == 'Gasoline Light Truck/Van/SUV') {
-  gas_consumed <- vmt / current_mpg
+# Calculate start_gas_cost and start external charging cost
+# if current car is none, everything stays zero
+if (current_car == 'Gasoline Car/Sedan') {
+  gas_consumed <- vmt / 30 ## assuming 30 mpg for cars
   start_gas_cost <- gas_price * gas_consumed
-} else {
-  start_gas_cost <- 0
+  start_gas_cost_daily <- start_gas_cost / 365
+} else if (current_car == 'Gasoline Light Truck/Van/SUV') {
+    gas_consumed <- vmt / 23 ## assuming 23 mpg for suv, etc
+    start_gas_cost <- gas_price * gas_consumed
+    start_gas_cost_daily <- start_gas_cost / 365
+} else if (current_car != 'None') { ## if they're starting with an EV...
+  ge_consumed <- vmt / current_ev_mpge
+  start_e_trans <- ge_consumed * 33.7  # Assuming 1 gallon equivalent ~ 33.7 kWh
+  start_e_trans_daily <- start_e_trans / 365
+  if (ev_charging == 'Public or Workplace/Daytime Level 2') {
+    start_e_trans_cost_daily <- start_e_trans_daily * 0.29  # Assuming $0.29 per kWh
+  } else if (ev_charging == 'Public or Workplace/Daytime DCFC') {
+    start_e_trans_cost_daily <- start_e_trans_daily * 0.42  # Assuming $0.42 per kWh
+  }
 }
-# Calculate start_daily_gas_cost
-start_daily_gas_cost <- start_gas_cost / 365
 
 ### post transition ###
 
-# EV MPGe
-ev_mpge <- ifelse(current_car == "Gasoline Light Truck/Van/SUV", 93, 100)
-# Transition
-transition <- inputs[14, 2]
-
 # Initialize variables
+gas_consumed <- 0 
 upgrade_gas_cost <- 0
-e_trans_consumed <- 0
-e_trans_consumed_daily <- 0
+upgrade_gas_cost_daily <- 0 
+upgrade_e_trans <- start_e_trans
+upgrade_e_trans_daily <- start_e_trans_cost_daily
+upgrade_e_trans_cost <- start_e_trans_cost
+upgrade_e_trans_cost_daily <- start_e_trans_cost_daily
 
 # Assess upgrade_gas_cost and e_trans_consumed based on transition
-if (transition == 'None' | transition == 'Solar PV') {
-  upgrade_gas_cost <- start_gas_cost
-} else {
-  ge_consumed <- vmt / ev_mpge
-  e_trans_consumed <- ge_consumed * 33.7  # Assuming 1 gallon equivalent ~ 33.7 kWh
-  e_trans_consumed_daily <- e_trans_consumed / 365
-}
-
-# Upgrade daily gas cost
-upgrade_daily_gas_cost <- upgrade_gas_cost / 365
-
-# EV charging behavior
-ev_charging <- inputs[18, 2]
-
-e_trans_cost_daily <-0
-
-# Initialize e_trans_cost_daily and e_trans_consumed_daily based on charging behavior
-if (ev_charging == "Residential/Overnight") {
-  charge_hours <- e_trans_consumed_daily / 7.6  # Assuming charge rate is 7.6 kW
-  trans_charge_load <- e_trans_consumed_daily / charge_hours  # Useful for TOU pricing
-  e_trans_cost_daily <- 0
-} else if (ev_charging == 'Public or Workplace/Daytime Level 2') {
-  e_trans_cost_daily <- e_trans_consumed_daily * 0.29  # Assuming $0.29 per kWh
-  e_trans_consumed_daily <- 0
-} else if (ev_charging == 'Public or Workplace/Daytime DCFC') {
-  e_trans_cost_daily <- e_trans_consumed_daily * 0.42  # Assuming $0.42 per kWh
-  e_trans_consumed_daily <- 0
-} else {
-  e_trans_cost_daily <- 0
-  e_trans_consumed_daily <- 0
+if (upgrade_car == 'Gasoline Car/Sedan') {
+  gas_consumed <- vmt / 30
+  upgrade_gas_cost <- gas_price * gas_consumed
+  upgrade_gas_cost_daily <- upgrade_gas_cost / 365
+} else if (upgrade_car == 'Gasoline Light Truck/Van/SUV') {
+  gas_consumed <- vmt / 23
+  upgrade_gas_cost <- gas_price * gas_consumed
+  upgrade_gas_cost_daily <- upgrade_gas_cost / 365
+} else if (upgrade_car != 'None') { ## if upgrading to EV
+  ge_consumed <- vmt / upgrade_ev_mpge
+  upgrade_e_trans <- ge_consumed * 33.7  # Assuming 1 gallon equivalent ~ 33.7 kWh
+  upgrade_e_trans_daily <- upgrade_e_trans / 365
+  if (ev_charging == 'Public or Workplace/Daytime Level 2') {
+    upgrade_e_trans_cost_daily <- upgrade_e_trans_daily * 0.29  # Assuming $0.29 per kWh
+    upgrade_e_trans_daily <- 0 
+  } else if (ev_charging == 'Public or Workplace/Daytime DCFC') {
+    upgrade_e_trans_cost_daily <- upgrade_e_trans_daily * 0.42  # Assuming $0.42 per kWh
+    upgrade_e_trans_daily <- 0
+  }
 }
 
 # Define the number of days in each month (including the total for the year)
 days_in_month <- c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 365)
 # Calculate start_gas_cost for each month
-start_gas_cost <- days_in_month * start_daily_gas_cost
+start_gas_cost <- days_in_month * start_gas_cost_daily 
 # Calculate upgrade_gas_cost for each month
-upgrade_gas_cost <- days_in_month * upgrade_daily_gas_cost
-# Calculate upgrade_res_ev_elec for each month
-upgrade_res_ev_elec <- days_in_month * e_trans_consumed_daily
+upgrade_gas_cost <- days_in_month * upgrade_gas_cost_daily
 # Calculate upgrade_res_ev_cost for each month
-upgrade_res_ev_cost <- days_in_month * e_trans_cost_daily
+start_res_ev_cost <- days_in_month * start_e_trans_cost_daily
+# Calculate upgrade_res_ev_elec for each month
+upgrade_res_ev_elec <- days_in_month * upgrade_e_trans_daily
+# Calculate upgrade_res_ev_cost for each month
+upgrade_res_ev_cost <- days_in_month * upgrade_e_trans_cost_daily
 
 # Add charging cost to electricity load 
-monthly_sums$upgrade_elec = monthly_sums$upgrade_elec + upgrade_res_ev_elec[1:12]
+monthly_sums$upgrade_elec <- monthly_sums$upgrade_elec + upgrade_res_ev_elec[1:12]
 
 #----------------- calculating costs --------------------
 
@@ -246,7 +256,7 @@ if (inputs[7, 2] == 'Lifeline') {
 # ---------- adding in transportation costs ----------------
 
 # start is just option for gasoline car, assuming if EV it is charged within home load 
-monthly_sums$start_fuel_cost <- start_gas_cost[1:12]
+monthly_sums$start_fuel_cost <- start_gas_cost[1:12] + start_res_ev_cost[1:12]
 # upgrade includes both gasoline (no transition) and possible public charging costs
 monthly_sums$upgrade_fuel_cost <- upgrade_gas_cost[1:12] + upgrade_res_ev_cost[1:12]
 
@@ -378,7 +388,7 @@ ggplot(combined_sums, aes(x = monthly_sums.Month, y = count, fill = type)) +
   theme(plot.title = element_text(hjust = 0.5))  # Center the title horizontally
 
 # Create the grouped bar chart
-ggplot(combined_sums, aes(x = monthly_sums.Month, y = count, fill = type)) +
+breakdown <- ggplot(combined_sums, aes(x = monthly_sums.Month, y = count, fill = type)) +
   geom_bar(stat = "identity", position = "dodge") +
   facet_wrap(~ source, ncol = 1) +  # Facet by 'source' to separate Start and Upgrade bars
   labs(
@@ -410,8 +420,10 @@ totals_df <- data.frame(
 # Create a bar plot
 bar_plot <- ggplot(totals_df, aes(x = Source, y = Total_Cost, fill = Source)) +
   geom_bar(stat = "identity") +
+  geom_text(aes(label = dollar(Total_Cost)), vjust = -0.5, size = 4) +  # Format as currency
   labs(title = "Start vs. Upgrade Costs", y = "Total Cost") +
   theme_minimal()
 
 print(bar_plot)
+print(breakdown)
                            
