@@ -1,5 +1,5 @@
 # LADWP Building Electrification Calculator
 
-This repository contains the initial functions to run an interactive building electrification calculator. The calculator will be used to estimate the impact of appliance and vehicle electrification on household energy bills in Los Angeles. The foundation of the calculator is NREL's End-Use Load Profiles for U.S. Building Stock dataset. 
+A draft of the calculator webpage can be found here: https://rsheinb.shinyapps.io/ladwp_bill_calc/
 
-https://www.nrel.gov/buildings/end-use-load-profiles.html
+This repository contains the initial functions to run the interactive building electrification calculator linked above. The calculator can be used to estimate the impact of appliance and vehicle electrification on household energy bills in Los Angeles. The foundation of the calculator is NREL's End-Use Load Profiles for U.S. Building Stock dataset: https://www.nrel.gov/buildings/end-use-load-profiles.html
