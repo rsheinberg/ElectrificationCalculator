@@ -1,1 +1,5 @@
+The original logic to run the calculator was developed in Python for ease of use. It was then transitioned to R to be able to take
+advantage of Posit's "Shiny" application, which is only in beta form for Python. 
 
+Thus, this folder contains the original calculator logic, including "Scaling Factors," which was used to develop the multipliers
+used between upgrade scenarios. 
